@@ -61,7 +61,10 @@
  *  
  *  Temperature is sent to MQTT server if using a ESP32 processor
  *  
- *  
+ *  MQTT
+ *    A message sent to this device by topic: SUBSCRIBE_TOPIC, with a "R"
+ *     in the 1st byte wil reset all Min/Max settings
+ *     
  * *********************************************************************
  * Ideas on decoding protocol and prototype code from
  * Ray Wang (Rayshobby LLC) http://rayshobby.net/?p=8998
@@ -77,7 +80,9 @@
  *  04-Apr-2018 1.0a  TRL - First Build
  *  05-Apr-2018 1.0b  TRL - Added support for RFM69-433Mhz receiver
  *  07-Apr-2018 1.0c  TRL - Added support for ESP32 and MQTT
- *
+ *  08-Apr-2018 1.0d  TRL - Added Min/Max reporting and resetting via MQTT
+ *  
+ *  
  *  Notes:  1)  Tested with Arduino 1.8.5
  *          2)  Testing using Moteino Mega Rev4 with 433Mhz RFM69 
  *                RFM69OOK lib from https://github.com/kobuki/RFM69OOK
@@ -90,9 +95,8 @@
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) Add improved interrupt robustnest 
- *          5) Add direct EMail or SMS support for alarms
- *          6) 
+ *          4) Add support for ESP8266, stil some issues....
+ *          5) 
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
@@ -142,41 +146,55 @@ RFM69OOK radio;
 // data packets if desired. (not used at this time)
 
 
+
+#include <Arduino.h>
 /* ************************************************************* */
 // Select processor options
-#ifdef ARDUINO_ARCH_ESP32       // ESP32 TTgo V1
-
+#ifdef ARDUINO_ARCH_ESP32
 #include <WiFi.h>
-#include "esp_wps.h"
+#include <esp_wps.h>
+#endif
+#ifdef ARDUINO_ARCH_ESP8266
+#include <ESP8266WiFi.h>
+#endif
+
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
 #include <PubSubClient.h>
 #include "MovingAverage.h"
 
 // WiFi and MQTT information
 // change it with your ssid-password
-const char* ssid = "MySSID";                  // <----------- Change This
-const char* password = "MYPASS";              // <----------- Change This
+const char* ssid = "myssid";                  // <----------- Change This
+const char* password = "mypass";              // <----------- Change This
 // MQTT Server IP Address or FQDN
-const char* mqtt_server = "192.168.20.32";    // <----------- Change This
+const char* mqtt_server = "192.168.167.32";    // <----------- Change This
 
 // create an instance of WiFi and PubSubClient client 
 WiFiClient espClient;
 PubSubClient client(espClient);
-MovingAverage <int> REF(7);       // create a moving average over last n values <----------- Change These as needed
-MovingAverage <int> FRZ(7);       //  7 * 120 sec = 840sec = ~14 min
 
-#define MAX_RTEMP     40          // Max temperature for refrigerator <----------- Change This as needed
-#define MAX_FTEMP     25          // Max temperature for freezer      <----------- Change This as needed
+MovingAverage <int> REF(7);       // create a moving average over last n values // <----------- Change This as needed
+MovingAverage <int> FRZ(7);       // 7 * 120 sec = 840sec = 14 min
+
+#define MAX_RTEMP     40          // Max temperature for refrigerator // <----------- Change This as needed
+#define MAX_FTEMP     25          // Max temperature for freezer
 
 // My topics
-#define RTEMP_TOPIC     "RSF/REF/Temp"                              //  <----------- Change These as needed
+#define RTEMP_TOPIC     "RSF/REF/Temp"  // <----------- Change These as needed
 #define FTEMP_TOPIC     "RSF/FRZ/Temp"
 #define RBATT_TOPIC     "RSF/REF/BATT"
 #define FBATT_TOPIC     "RSF/FRZ/BATT"
 #define RALARM_TOPIC    "RSF/REF/ALARM"
 #define FALARM_TOPIC    "RSF/FRZ/ALARM"
 #define BALARM_TOPIC    "RSF/BATT/ALARM"
+#define RMIN_TOPIC      "RSF/REF/MIN"
+#define RMAX_TOPIC      "RSF/REF/MAX"
+#define FMIN_TOPIC      "RSF/FRZ/MIN"
+#define FMAX_TOPIC      "RSF/FRZ/MAX"
+#define SUBSCRIBE_TOPIC "RSF/REF/RESET"
 
-#define AlarmTimeToWait           60L            // Wait this amount of time for next alarm message, in Minutes <----------- Change This as needed
+
+#define AlarmTimeToWait         60L              // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
 #define BattAlarmTimeToWait     1440L            // Wait this amount of time for next alarm message, in Minutes
 
 unsigned long LastTimeRef = 0;
@@ -193,8 +211,7 @@ unsigned long Minute = 0;
 
 char msg[50];                               // char string buffer
 
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-
+//portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;    // <------------------------------------- esp32 only
 /* pin that is attached to interrupt */
 #define DATAPIN          12                 // interrupt pin
 byte interruptPin = DATAPIN;
@@ -223,6 +240,9 @@ byte interruptPin = DATAPIN;
 #define MyFrame           14                // Trigger at end of frame
 
 /* ************************************************************* */
+
+#elif ARDUINO_ARCH_ESP8266
+#Warning Processor is a  ESP8266
 #else
 #error CPU undefined.....
 #endif
@@ -249,33 +269,48 @@ unsigned int changeCount = 0;               // Count of pulses edges
 unsigned char dataBytes[DATABYTESCNT];      // Decoded data storage
 unsigned long mytime = 0;                   // event time
 unsigned int temp = 0;                      // temperature in deg F
+int RMinTemp = 127;                         // Max temp is 127deg
+int RMaxTemp = 0;
+int FMinTemp = 127;                         // Max temp is 127deg
+int FMaxTemp = 0;
 
 
-#ifdef ARDUINO_ARCH_ESP32
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
  /* ************************************************************* */
 void receivedCallback(char* topic, byte* payload, unsigned int length) 
 {
-  Serial.print("Message received: ");
+  Serial.println("Message received: ");
   Serial.println(topic);
 
   Serial.print("payload: ");
-  for (int i = 0; i < length; i++) {
+  for (int i = 0; i < length; i++) 
+  {
     Serial.print((char)payload[i]);
   }
+
+  if ((char)payload[0] == 'R') 
+  {
+    RMinTemp = 127;
+    RMaxTemp = 0;
+    FMinTemp = 127;
+    FMaxTemp = 0;
+  }
 }
+
 
  /* ************************************************************* */
 void mqttconnect() {
   /* Loop until reconnected */
   while (!client.connected()) {
-    Serial.print("MQTT connecting ...");
+    Serial.println();
+    Serial.println("MQTT connecting ...");
     /* client ID */
-    String clientId = "ESP32Client";
+    String clientId = "ESP32_REF_Client";
     /* connect now */
     if (client.connect(clientId.c_str())) {
       Serial.println("connected");
       /* subscribe topic with default QoS 0*/
-  //    client.subscribe(LED_TOPIC);
+     client.subscribe(SUBSCRIBE_TOPIC);
     } else {
       Serial.print("failed, status code =");
       Serial.print(client.state());
@@ -508,7 +543,7 @@ void setup()
 #endif
 
 
-#ifdef ARDUINO_ARCH_ESP32       // ESP32 TTgo V1
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
 #ifdef RFM69
     pinMode( 14, INPUT);        // RFM69 RST
     //digitalWrite (14, LOW);
@@ -529,12 +564,14 @@ void setup()
  
   WiFi.begin(ssid, password);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED) 
+  {
     delay(500);
     Serial.print(".");
-    esp_wifi_wps_start(0);
+    //esp_wifi_wps_start(0);
   }
-
+    delay (1000);
+  
   /* configure the MQTT server with IPaddress and port */
   client.setServer(mqtt_server, 1883);
   /* this receivedCallback function will be invoked 
@@ -581,9 +618,7 @@ int convertTimingToBit(unsigned int t0, unsigned int t1)
 }
 
 
-
-#ifdef ARDUINO_ARCH_ESP32       // ESP32 TTgo V1
-
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
 /* ************************************************************* */
 // 0986TX send's a meassge every ~120 sec, so lets average temperature
 // over a number of sample, if is greater that our alarm settings, we need to send
@@ -623,27 +658,31 @@ void MaxFreezerAlarm(int temp)
       { F_Flag = false; }                                   // Yes, reset alarm flag
   }
 }
+#endif
 
 /* ************************************************************* */
-void BatteryLowAlarm(int device)
+void BatteryLowAlarm (int device)
 {
   if (B_Flag == false)                         // see if this is 1st time here for this alarm...
    {
-      if (device == 1) snprintf (msg, 50, "Battery Low, Refrigerator Sensor: %d", device);
-      if (device == 2) snprintf (msg, 50, "Battery Low, Frezzer Sensor: %d", device);
-      client.publish (BALARM_TOPIC, msg);
-      Serial.println ("Battery Low Alarm");    
+      if (device == 1) {
+        snprintf (msg, 50, "Battery Low, Refrigerator Sensor: %d", device);
+        Serial.println ("Battery Low Alarm 1R");  
+      }
+      if (device == 2) {
+        snprintf (msg, 50, "Battery Low, Frezzer Sensor: %d", device);
+        Serial.println ("Battery Low Alarm 2F");  
+      }
+      client.publish (BALARM_TOPIC, msg);  
       B_Flag = true;
       LastTimeBatt = Minute;                    // save the current time
    }
   else
   {
     if ( Minute >= (LastTimeBatt + BattAlarmTimeToWait ) )  // see if it time to re-send alarm
-      { B_Flag = false; }                                   // Yes, reset alarm flag
+          { B_Flag = false; }                               // Yes, reset alarm flag
   }
 }
-
-#endif
 
 
 /* ************************************************************* */
@@ -657,7 +696,7 @@ void BatteryLowAlarm(int device)
 void loop()
 {
 
-#ifdef ARDUINO_ARCH_ESP32       // ESP32 TTgo V1
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
 /* if client was disconnected then try to reconnect again */
    if (!client.connected()) {
      mqttconnect();
@@ -678,6 +717,7 @@ void loop()
       detachInterrupt(MyInterrupt);
       unsigned int ringIndex;
       bool fail = false;
+
 
 /* ************************************************************* */
 // Print the bit stream for debugging. 
@@ -789,8 +829,10 @@ void loop()
               Serial.print( dataBytes[2], HEX );
               
               // print sensor number, 1 or 2
-              if ( dataBytes[3] & 0x01) { Serial.print(" - 2F: "); }      
-              else { Serial.print(" - 1R: "); }
+              if ( dataBytes[3] & 0x01) 
+                { Serial.print(" - 2F: "); }      
+              else 
+                { Serial.print(" - 1R: "); }
               
               // print battery status
               if (dataBytes[3] & 0x02) { Serial.print(" low battery " );}
@@ -800,7 +842,8 @@ void loop()
               else { temp =  dataBytes[0];}
               
               Serial.print ( temp, DEC);
-              Serial.println(" F"); 
+              Serial.println(" F");
+               
 
 #ifdef MyDEBUG
               
@@ -815,7 +858,7 @@ void loop()
 #endif      // VERBOSE_OUTPUT           
 
 
-#ifdef ARDUINO_ARCH_ESP32       // ESP32 TTgo V1
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
 
 // send sensor number, 1R or 2R temperature and battery status, and alarm status to MQTT server
 
@@ -824,21 +867,40 @@ void loop()
           else { temp =  dataBytes[0]; }
           snprintf (msg, 6, "%d", temp);
               
-          if ( dataBytes[3] & 0x01) 
+          if ( dataBytes[3] & 0x01)                                       // Sensor 2, Frezzer
              { 
-              client.publish (FTEMP_TOPIC, msg);
-              if (dataBytes[3] & 0x02 == 0x02) 
+              client.publish (FTEMP_TOPIC, msg);                          // send temperature
+
+              if (temp>FMaxTemp) {FMaxTemp = temp;}
+              if (temp<FMinTemp) {FMinTemp = temp;}
+              
+              snprintf (msg, 6, "%d", FMinTemp);
+              client.publish (FMIN_TOPIC, msg);                           // send min temperature              
+              snprintf (msg, 6, "%d", FMaxTemp);
+              client.publish (FMAX_TOPIC, msg);                           // send max temperature 
+                            
+              if ( (dataBytes[3] & 0x02) == 0x02) 
                 {
                   client.publish (FBATT_TOPIC, "Low Battery 2F");
                   BatteryLowAlarm ( 2 );
                 }
+              
               int Frz_Temp = FRZ.CalculateMovingAverage((int) temp);
-              if (Frz_Temp >= MAX_FTEMP) { MaxFreezerAlarm(Frz_Temp); }     // do we have an alarm? Yes
+              if (Frz_Temp >= MAX_FTEMP) { MaxFreezerAlarm(Frz_Temp); }   // do we have an alarm? Yes
               else { F_Flag = false; }    // no alarm now
               }
-          else 
+          else                                                           // Sensor 1, Refrigerator 
              { 
               client.publish (RTEMP_TOPIC, msg);
+              
+              if (temp>RMaxTemp) {RMaxTemp = temp;}
+              if (temp<RMinTemp) {RMinTemp = temp;}
+              
+              snprintf (msg, 6, "%d", RMinTemp);
+              client.publish (RMIN_TOPIC, msg);                           // send min temperature              
+              snprintf (msg, 6, "%d", RMaxTemp);
+              client.publish (RMAX_TOPIC, msg);                           // send max temperature               
+              
               if (dataBytes[3] & 0x02 == 0x02) 
                 {
                   client.publish (RBATT_TOPIC, "Low Battery 1R");
