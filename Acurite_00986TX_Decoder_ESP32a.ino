@@ -92,7 +92,7 @@
  *          3) Improve WiFi connection and retry... not very robust at this point
  *          4) Add improved interrupt robustnest 
  *          5) Add direct EMail or SMS support for alarms
- *          6) Add battery low alarm 
+ *          6) 
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
@@ -168,26 +168,30 @@ MovingAverage <int> FRZ(7);       //  7 * 120 sec = 840sec = ~14 min
 #define MAX_FTEMP     25          // Max temperature for freezer      <----------- Change This as needed
 
 // My topics
-#define RTEMP_TOPIC     "RSF/REF/Temp"                                <----------- Change These as needed
+#define RTEMP_TOPIC     "RSF/REF/Temp"                              //  <----------- Change These as needed
 #define FTEMP_TOPIC     "RSF/FRZ/Temp"
 #define RBATT_TOPIC     "RSF/REF/BATT"
 #define FBATT_TOPIC     "RSF/FRZ/BATT"
 #define RALARM_TOPIC    "RSF/REF/ALARM"
 #define FALARM_TOPIC    "RSF/FRZ/ALARM"
+#define BALARM_TOPIC    "RSF/BATT/ALARM"
 
-#define AlarmTimeToWait    60L              // Wait this amount of time for next alarm message, in Minutes <----------- Change This as needed
+#define AlarmTimeToWait           60L            // Wait this amount of time for next alarm message, in Minutes <----------- Change This as needed
+#define BattAlarmTimeToWait     1440L            // Wait this amount of time for next alarm message, in Minutes
 
 unsigned long LastTimeRef = 0;
 unsigned long LastTimeFrz = 0;
+unsigned long LastTimeBatt = 0;
 bool R_Flag = false;
 bool F_Flag = false;
+bool B_Flag = false;
    
 unsigned long currentMillis = 0;            // a 1 Minute clock timer
 unsigned long interval = 60000;             // = 60 sec --> 1 Minure
 unsigned long previousMillis = 0;
 unsigned long Minute = 0;
 
-char msg[30];                               // char string buffer
+char msg[50];                               // char string buffer
 
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -619,6 +623,26 @@ void MaxFreezerAlarm(int temp)
       { F_Flag = false; }                                   // Yes, reset alarm flag
   }
 }
+
+/* ************************************************************* */
+void BatteryLowAlarm(int device)
+{
+  if (B_Flag == false)                         // see if this is 1st time here for this alarm...
+   {
+      if (device == 1) snprintf (msg, 30, "Battery Low, Refrigerator Sensor: %d", device);
+      if (device == 2) snprintf (msg, 30, "Battery Low, Frezzer Sensor: %d", device);
+      client.publish (BALARM_TOPIC, msg);
+      Serial.println ("Battery Low Alarm");    
+      B_Flag = true;
+      LastTimeBatt = Minute;                    // save the current time
+   }
+  else
+  {
+    if ( Minute >= (LastTimeBatt + BattAlarmTimeToWait ) )  // see if it time to re-send alarm
+      { B_Flag = false; }                                   // Yes, reset alarm flag
+  }
+}
+
 #endif
 
 
@@ -803,7 +827,11 @@ void loop()
           if ( dataBytes[3] & 0x01) 
              { 
               client.publish (FTEMP_TOPIC, msg);
-              if (dataBytes[3] & 0x02 == 0x02) client.publish (FBATT_TOPIC, "Low Battery 2F");
+              if (dataBytes[3] & 0x02 == 0x02) 
+                {
+                  client.publish (FBATT_TOPIC, "Low Battery 2F");
+                  BatteryLowAlarm ( 2 );
+                }
               int Frz_Temp = FRZ.CalculateMovingAverage((int) temp);
               if (Frz_Temp >= MAX_FTEMP) { MaxFreezerAlarm(Frz_Temp); }     // do we have an alarm? Yes
               else { F_Flag = false; }    // no alarm now
@@ -811,7 +839,11 @@ void loop()
           else 
              { 
               client.publish (RTEMP_TOPIC, msg);
-              if (dataBytes[3] & 0x02 == 0x02) client.publish (RBATT_TOPIC, "Low Battery 1R");
+              if (dataBytes[3] & 0x02 == 0x02) 
+                {
+                  client.publish (RBATT_TOPIC, "Low Battery 1R");
+                  BatteryLowAlarm ( 1 );
+                }
               int Ref_Temp = REF.CalculateMovingAverage((int) temp);
               if (Ref_Temp >= MAX_RTEMP)  { MaxRefrigeratorAlarm(Ref_Temp); }
               else { R_Flag = false; }   // no alarm now
