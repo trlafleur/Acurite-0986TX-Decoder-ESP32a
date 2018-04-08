@@ -92,7 +92,7 @@
  *          3) Improve WiFi connection and retry... not very robust at this point
  *          4) Add improved interrupt robustnest 
  *          5) Add direct EMail or SMS support for alarms
- *          6)
+ *          6) Add battery low alarm 
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
