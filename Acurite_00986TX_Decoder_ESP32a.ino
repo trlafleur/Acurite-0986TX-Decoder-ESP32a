@@ -90,7 +90,8 @@
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) 
+ *          4) Add improved interrupt robustnest 
+ *          5)
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
@@ -151,7 +152,7 @@ RFM69OOK radio;
 
 // WiFi and MQTT information
 // change it with your ssid-password
-const char* ssid = "MSSID";                   // <----------- Change This
+const char* ssid = "MySSID";                  // <----------- Change This
 const char* password = "MYPASS";              // <----------- Change This
 // MQTT Server IP Address or FQDN
 const char* mqtt_server = "192.168.20.32";    // <----------- Change This
@@ -159,21 +160,21 @@ const char* mqtt_server = "192.168.20.32";    // <----------- Change This
 // create an instance of WiFi and PubSubClient client 
 WiFiClient espClient;
 PubSubClient client(espClient);
-MovingAverage <int> REF(7);       // create a moving average over last n values
-MovingAverage <int> FRZ(7);       // 7 * 120 sec = 840sec = 14 min
+MovingAverage <int> REF(7);       // create a moving average over last n values <----------- Change These as needed
+MovingAverage <int> FRZ(7);       //  7 * 120 sec = 840sec = ~14 min
 
-#define MAX_RTEMP     40          // Max temperature for refrigerator
-#define MAX_FTEMP     25          // Max temperature for freezer
+#define MAX_RTEMP     40          // Max temperature for refrigerator <----------- Change This as needed
+#define MAX_FTEMP     25          // Max temperature for freezer      <----------- Change This as needed
 
 // My topics
-#define RTEMP_TOPIC     "RSF/REF/Temp"
+#define RTEMP_TOPIC     "RSF/REF/Temp"                                <----------- Change These as needed
 #define FTEMP_TOPIC     "RSF/FRZ/Temp"
 #define RBATT_TOPIC     "RSF/REF/BATT"
 #define FBATT_TOPIC     "RSF/FRZ/BATT"
 #define RALARM_TOPIC    "RSF/REF/ALARM"
 #define FALARM_TOPIC    "RSF/FRZ/ALARM"
 
-#define AlarmTimeToWait    15L              // Wait this amount of time for next message, in Minutes
+#define AlarmTimeToWait    60L              // Wait this amount of time for next alarm message, in Minutes <----------- Change This as needed
 
 unsigned long LastTimeRef = 0;
 unsigned long LastTimeFrz = 0;
