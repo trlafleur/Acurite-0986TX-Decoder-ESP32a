@@ -68,6 +68,7 @@ template <typename T_ty> const char * TypeInfo<T_ty>::name = "unknown";
 //
 // Handy macro to make querying stuff easier.
 //
+#define typeof(x) __typeof__(x) // dano 2018-04-
 #define TYPE_NAME(var) TypeInfo< typeof(var) >::name
 //
 // Handy macro to make defining stuff easier.

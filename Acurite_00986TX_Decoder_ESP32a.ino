@@ -629,8 +629,8 @@ void BatteryLowAlarm(int device)
 {
   if (B_Flag == false)                         // see if this is 1st time here for this alarm...
    {
-      if (device == 1) snprintf (msg, 30, "Battery Low, Refrigerator Sensor: %d", device);
-      if (device == 2) snprintf (msg, 30, "Battery Low, Frezzer Sensor: %d", device);
+      if (device == 1) snprintf (msg, 50, "Battery Low, Refrigerator Sensor: %d", device);
+      if (device == 2) snprintf (msg, 50, "Battery Low, Frezzer Sensor: %d", device);
       client.publish (BALARM_TOPIC, msg);
       Serial.println ("Battery Low Alarm");    
       B_Flag = true;
