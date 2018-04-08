@@ -91,7 +91,8 @@
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
  *          4) Add improved interrupt robustnest 
- *          5)
+ *          5) Add direct EMail or SMS support for alarms
+ *          6)
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
