@@ -10,7 +10,7 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  *  sent approximately every 120 seconds. Their are two sensor
  *  1R is for refrigerator, 2F is for freezer
  *
- * The 00986TX sends a block of data, 4 SYNC pulse + a DATA stream
+ * The 0986TX sends a block of data, 4 SYNC pulse + a DATA stream
  *  per temperature reading. Sometimes its sends one block of data,
  *  at other time its send two block. Their seems to be a bug in
  *  the device when it sends the 2nd block. The last bit is NOT sent
