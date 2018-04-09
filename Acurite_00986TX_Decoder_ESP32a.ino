@@ -1,18 +1,18 @@
 
 /**********************************************************************
- * Arduino code to decode the Acurite 00986TX wireless temperature sensor
+ * Arduino code to decode the Acurite 0986TX wireless temperature sensor
  *
- * The 00986TX wireless temperature probe contains a 433.92 MHz
+ * The 0986TX wireless temperature probe contains a 433.92 MHz
  *  wireless transmitter. The temperature from the sensor is
  *  sent approximately every 120 seconds. Their are two sensor
  *  1R is for refrigerator, 2F is for freezer
  *
- * The 00986TX sends a block of data, 4 SYNC pulse + a DATA stream
+ * The 0986TX sends a block of data, 4 SYNC pulse + a DATA stream
  *  per temperature reading. Sometimes its sends one block of data,
  *  at other time its send two block. Their seems to be a bug in
- *  the device when it sends the 2nd block. The last bit is NOT sent
+ *  the device when it sends the 2nd block. (The last bit is NOT sent
  *  correctly if the last bit of the CRC is a 1. So for now we don’t
- *  decode the 2nd message
+ *  decode the 2nd message.)
  *
  * The sensor then sends 4 data sync pulses of approximately 50% 
  *  duty cycle. The sync pulses start with a 
@@ -59,12 +59,26 @@
  * As a note: often the 1st sync pulse high is ~2300us long, last one is
  *  ~1300us long.
  *  
- *  Temperature is sent to MQTT server if using a ESP32 processor
+ *  Temperature is sent to MQTT server if using a ESP32 or ESP8266 processor
  *  
  *  MQTT
  *    A message sent to this device by topic: SUBSCRIBE_TOPIC, with a "R"
- *     in the 1st byte wil reset all Min/Max settings
+ *     in the 1st byte will reset all Min/Max settings
  *     
+ *  MQTT Data Sent:
+ *    Temperature, Min, Max and Battery Status for both devices
+ *    Alarms for over-temperature and Low Battery
+ *    
+ *  Integration time for alarms can be set for each sensor.     
+ *  
+ *  Radio:
+ *   Using an RXB6 or equivalent, connect to 3.3v, gnd and connect dataout
+ *    to interrupt pin on CPU.
+ *    
+ *   RFM69 connect DIO-2 to interrupt pin on CPU.
+ *    
+ *   Antenna is 17.2cm long at 433MHz
+ *  
  * *********************************************************************
  * Ideas on decoding protocol and prototype code from
  * Ray Wang (Rayshobby LLC) http://rayshobby.net/?p=8998
@@ -86,8 +100,8 @@
  *  Notes:  1)  Tested with Arduino 1.8.5
  *          2)  Testing using Moteino Mega Rev4 with 433Mhz RFM69 
  *                RFM69OOK lib from https://github.com/kobuki/RFM69OOK
- *                DIO2 connected to pin INT0
- *          3)  Tested with a RXB6 receiver connected to pin INT0
+ *                DIO2 connected to pin interrupt pin.
+ *          3)  Tested with a RXB6 receiver connected to pin interrupt pin.
  *          4)  Tested using a TTGO R1 ESP32 module
  *          5)  ESP32 version supports sending data via MQTT
  *          6)
@@ -95,7 +109,7 @@
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) Add support for ESP8266, stil some issues....
+ *          4) Add support for ESP8266, work in progress, not working
  *          5) 
  * 
  * Tom Lafleur --> tom@lafleur.us
@@ -164,23 +178,23 @@ RFM69OOK radio;
 
 // WiFi and MQTT information
 // change it with your ssid-password
-const char* ssid = "myssid";                  // <----------- Change This
-const char* password = "mypass";              // <----------- Change This
+const char* ssid = "MySSID";                    // <----------- Change This
+const char* password = "MyPass";                // <----------- Change This
 // MQTT Server IP Address or FQDN
-const char* mqtt_server = "192.168.167.32";    // <----------- Change This
+const char* mqtt_server = "192.168.167.32";     // <----------- Change This
 
 // create an instance of WiFi and PubSubClient client 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-MovingAverage <int> REF(7);       // create a moving average over last n values // <----------- Change This as needed
-MovingAverage <int> FRZ(7);       // 7 * 120 sec = 840sec = 14 min
+MovingAverage <int> REF (10);       // create a moving average over last n values   // <----------- Change This as needed
+MovingAverage <int> FRZ (10);       // 10 * 120 sec = 1200sec = 20min
 
-#define MAX_RTEMP     40          // Max temperature for refrigerator // <----------- Change This as needed
-#define MAX_FTEMP     25          // Max temperature for freezer
+#define MAX_RTEMP     40            // Max temperature for refrigerator             // <----------- Change This as needed
+#define MAX_FTEMP     25            // Max temperature for freezer
 
 // My topics
-#define RTEMP_TOPIC     "RSF/REF/Temp"  // <----------- Change These as needed
+#define RTEMP_TOPIC     "RSF/REF/Temp"                                              // <----------- Change These as needed
 #define FTEMP_TOPIC     "RSF/FRZ/Temp"
 #define RBATT_TOPIC     "RSF/REF/BATT"
 #define FBATT_TOPIC     "RSF/FRZ/BATT"
@@ -194,11 +208,11 @@ MovingAverage <int> FRZ(7);       // 7 * 120 sec = 840sec = 14 min
 #define SUBSCRIBE_TOPIC "RSF/REF/RESET"
 
 
-#define AlarmTimeToWait         60L              // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
+#define AlarmTimeToWait          120L            // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
 #define BattAlarmTimeToWait     1440L            // Wait this amount of time for next alarm message, in Minutes
 
-unsigned long LastTimeRef = 0;
-unsigned long LastTimeFrz = 0;
+unsigned long LastTimeRef  = 0;
+unsigned long LastTimeFrz  = 0;
 unsigned long LastTimeBatt = 0;
 bool R_Flag = false;
 bool F_Flag = false;
@@ -287,7 +301,7 @@ void receivedCallback(char* topic, byte* payload, unsigned int length)
   {
     Serial.print((char)payload[i]);
   }
-
+  Serial.println();
   if ((char)payload[0] == 'R') 
   {
     RMinTemp = 127;
@@ -623,6 +637,7 @@ int convertTimingToBit(unsigned int t0, unsigned int t1)
 // 0986TX send's a meassge every ~120 sec, so lets average temperature
 // over a number of sample, if is greater that our alarm settings, we need to send
 // an alarm, but only once every so many minutes.
+
 void MaxRefrigeratorAlarm (int temp)
 { 
   if (R_Flag == false)                         // see if this is 1st time here for this alarm...
@@ -706,7 +721,7 @@ void loop()
    client.loop();
 #endif
 
-// lets setup a long duration timer at 1 minute 
+// lets setup a long duration timer at 1 minute tick
   currentMillis = millis ();                                // get current time
   if (currentMillis - previousMillis >= interval)
         {previousMillis = currentMillis; Minute++;}
@@ -815,10 +830,13 @@ void loop()
     for (unsigned char i=0; i <= 4; i++)  { dataBytes[i] = reverse8(dataBytes[i]); }
 
 /* ************************************************************* */
-#ifdef VERBOSE_OUTPUT 
 
-          if ( crc8le(dataBytes, 4, 0x07, 0) == dataBytes[4] )
+        if (!fail)                                                // if fail, we decode some bad bits
+        {
+          if ( crc8le(dataBytes, 4, 0x07, 0) == dataBytes[4] )    // if CRC8 is good...
           {
+
+ #ifdef VERBOSE_OUTPUT            
               signed char temp;
               //Serial.println(""); 
               mytime = millis();
@@ -853,7 +871,7 @@ void loop()
               Serial.print( " Should be: ");
               Serial.println( crc8le(dataBytes, 4, 0x07, 0), HEX);
 #endif
-           }
+         //  }
              
 #endif      // VERBOSE_OUTPUT           
 
@@ -871,8 +889,8 @@ void loop()
              { 
               client.publish (FTEMP_TOPIC, msg);                          // send temperature
 
-              if (temp>FMaxTemp) {FMaxTemp = temp;}
-              if (temp<FMinTemp) {FMinTemp = temp;}
+              if (temp > FMaxTemp) {FMaxTemp = temp;}
+              if (temp < FMinTemp) {FMinTemp = temp;}
               
               snprintf (msg, 6, "%d", FMinTemp);
               client.publish (FMIN_TOPIC, msg);                           // send min temperature              
@@ -893,8 +911,8 @@ void loop()
              { 
               client.publish (RTEMP_TOPIC, msg);
               
-              if (temp>RMaxTemp) {RMaxTemp = temp;}
-              if (temp<RMinTemp) {RMinTemp = temp;}
+              if (temp > RMaxTemp) {RMaxTemp = temp;}
+              if (temp < RMinTemp) {RMinTemp = temp;}
               
               snprintf (msg, 6, "%d", RMinTemp);
               client.publish (RMIN_TOPIC, msg);                           // send min temperature              
@@ -911,7 +929,10 @@ void loop()
               else { R_Flag = false; }   // no alarm now
               }     
 #endif
-        
+         
+          }   // End of if (crc8le...
+        }   // End of if (!fail)...
+          
       received = false;
       syncFound = false;
       
