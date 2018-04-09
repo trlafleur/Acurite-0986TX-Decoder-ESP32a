@@ -1,4 +1,4 @@
-# Acurite_00986TX_Decoder_ESP32a
+# Acurite 0986TX Decoder ESP32a
 A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
 
 /**********************************************************************
@@ -63,7 +63,10 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  *  
  *  Temperature is sent to MQTT server if using a ESP32 processor
  *  
- *  
+ *  MQTT
+ *    A message sent to this device by topic: SUBSCRIBE_TOPIC, with a "R"
+ *     in the 1st byte wil reset all Min/Max settings
+ *     
  * *********************************************************************
  * Ideas on decoding protocol and prototype code from
  * Ray Wang (Rayshobby LLC) http://rayshobby.net/?p=8998
@@ -79,7 +82,9 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  *  04-Apr-2018 1.0a  TRL - First Build
  *  05-Apr-2018 1.0b  TRL - Added support for RFM69-433Mhz receiver
  *  07-Apr-2018 1.0c  TRL - Added support for ESP32 and MQTT
- *
+ *  08-Apr-2018 1.0d  TRL - Added Min/Max reporting and resetting via MQTT
+ *  
+ *  
  *  Notes:  1)  Tested with Arduino 1.8.5
  *          2)  Testing using Moteino Mega Rev4 with 433Mhz RFM69 
  *                RFM69OOK lib from https://github.com/kobuki/RFM69OOK
@@ -92,7 +97,8 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) 
+ *          4) Add support for ESP8266, stil some issues....
+ *          5) 
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
