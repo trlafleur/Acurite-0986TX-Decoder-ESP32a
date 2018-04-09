@@ -1,4 +1,4 @@
-# Acurite 0986TX Decoder for: ESP32 ESP8266 Moteino-Mega
+# Acurite 0986TX decoder for: ESP32 ESP8266 Moteino-Mega
 A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
 
 ~~~
