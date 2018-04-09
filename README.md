@@ -3,7 +3,7 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
 
 ~~~
 /**********************************************************************
- * Arduino code to decode the Acurite 00986TX wireless temperature sensor
+ * Arduino code to decode the Acurite 0986TX wireless temperature sensor
  *
  * The 00986TX wireless temperature probe contains a 433.92 MHz
  *  wireless transmitter. The temperature from the sensor is
@@ -62,12 +62,18 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  * As a note: often the 1st sync pulse high is ~2300us long, last one is
  *  ~1300us long.
  *  
- *  Temperature is sent to MQTT server if using a ESP32 processor
+ *  Temperature is sent to MQTT server if using a ESP32 or ESP8266 processor
  *  
  *  MQTT
  *    A message sent to this device by topic: SUBSCRIBE_TOPIC, with a "R"
- *     in the 1st byte wil reset all Min/Max settings
+ *     in the 1st byte will reset all Min/Max settings
  *     
+ *  MQTT Data Sent:
+ *    Temperature, Min, Max and Battery Status for both devices
+ *    Alarms for over-temperature and Low Battery
+ *    
+ *  Integration time for alarms can be set for each sensor     
+ *  
  * *********************************************************************
  * Ideas on decoding protocol and prototype code from
  * Ray Wang (Rayshobby LLC) http://rayshobby.net/?p=8998
@@ -98,7 +104,7 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) Add support for ESP8266, stil some issues....
+ *          4) Add support for ESP8266, work in progress, not working
  *          5) 
  * 
  * Tom Lafleur --> tom@lafleur.us
