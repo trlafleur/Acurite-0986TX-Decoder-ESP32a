@@ -1,6 +1,7 @@
 # Acurite 0986TX Decoder for: ESP32 ESP8266 Moteino-Mega
 A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
 
+~~~
 /**********************************************************************
  * Arduino code to decode the Acurite 00986TX wireless temperature sensor
  *
@@ -103,3 +104,4 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  * Tom Lafleur --> tom@lafleur.us
  * 
  */
+~~~
