@@ -95,17 +95,16 @@ A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
  *  Notes:  1)  Tested with Arduino 1.8.5
  *          2)  Testing using Moteino Mega Rev4 with 433Mhz RFM69 
  *                RFM69OOK lib from https://github.com/kobuki/RFM69OOK
- *                DIO2 connected to pin INT0
- *          3)  Tested with a RXB6 receiver connected to pin INT0
+ *                DIO2 connected to pin interrupt pin.
+ *          3)  Tested with a RXB6 receiver connected to pin interrupt pin.
  *          4)  Tested using a TTGO R1 ESP32 module
  *          5)  ESP32 version supports sending data via MQTT
- *          6)
+ *          6)  ESP8266 tested with a NodeMCU 1.0
  *          
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
  *          2) move MyDebug define's inside processor type
  *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) Add support for ESP8266, work in progress, not working
- *          5) 
+ *          4) 
  * 
  * Tom Lafleur --> tom@lafleur.us
  * 
