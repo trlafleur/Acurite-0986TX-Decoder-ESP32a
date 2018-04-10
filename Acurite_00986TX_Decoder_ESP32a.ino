@@ -95,21 +95,24 @@
  *  05-Apr-2018 1.0b  TRL - Added support for RFM69-433Mhz receiver
  *  07-Apr-2018 1.0c  TRL - Added support for ESP32 and MQTT
  *  08-Apr-2018 1.0d  TRL - Added Min/Max reporting and resetting via MQTT
+ *  10-Apr-2018 1.0e  TRL - Added E-Mail support
  *  
  *  
  *  Notes:  1)  Tested with Arduino 1.8.5
  *          2)  Testing using Moteino Mega Rev4 with 433Mhz RFM69 
  *                RFM69OOK lib from https://github.com/kobuki/RFM69OOK
  *                DIO2 connected to pin interrupt pin.
- *          3)  Tested with a RXB6 receiver connected to pin interrupt pin.
+ *          3)  Tested with a RXB6 receiver connected to interrupt pin.
  *          4)  Tested using a TTGO R1 ESP32 module
- *          5)  ESP32 version supports sending data via MQTT
- *          6)
+ *          5)  ESP32 amd ESP8266 supports sending data via MQTT or E-Mail
+ *          6)  ESP8266 tested with a NodeMCU 1.0
+ *          7)  Added E-mail-SMS Support NOTE: you must edit Gsender.h with your info
+ *          8)  
  *          
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
- *          2) move MyDebug define's inside processor type
- *          3) Improve WiFi connection and retry... not very robust at this point
- *          4) Add support for ESP8266, work in progress, not working
+ *          2) Move MyDebug define's inside processor type
+ *          3) 
+ *          4) 
  *          5) 
  * 
  * Tom Lafleur --> tom@lafleur.us
@@ -123,12 +126,14 @@
 //#define DISPLAY_BIT_TIMING
 //#define DISPLAY_DATA_BYTES
 #define MyDEBUG
+#define IF_MQTT
+#define IF_EMAIL
 
 #ifdef RFM69
-#include <RFM69OOK.h>
-#include <SPI.h>
-#include <RFM69OOKregisters.h>
-RFM69OOK radio;
+  #include <RFM69OOK.h>
+  #include <SPI.h>
+  #include <RFM69OOKregisters.h>
+  RFM69OOK radio;
 #endif
 
 // Ring buffer size has to be large enough to fit
@@ -162,106 +167,127 @@ RFM69OOK radio;
 
 
 #include <Arduino.h>
+
 /* ************************************************************* */
-// Select processor options
+// Select processor includes
 #ifdef ARDUINO_ARCH_ESP32
-#include <WiFi.h>
-#include <esp_wps.h>
+  #include <WiFi.h>
+  #include <esp_wps.h>
+  #include "Gsender.h"
+  #include <WiFiClientSecure.h>
+  #include "MovingAverage.h"
 #endif
 #ifdef ARDUINO_ARCH_ESP8266
-#include <ESP8266WiFi.h>
+  #include <ESP8266WiFi.h>
+  #include "Gsender.h"
+  #include <WiFiClientSecure.h>
+  #include "MovingAverage.h"
 #endif
 
 #if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
-#include <PubSubClient.h>
-#include "MovingAverage.h"
 
-// WiFi and MQTT information
-// change it with your ssid-password
-const char* ssid = "MySSID";                 // <----------- Change This
-const char* password = "MyPass";       // <----------- Change This
-// MQTT Server IP Address or FQDN
-const char* mqtt_server = "192.168.167.32";    // <----------- Change This
-
-// create an instance of WiFi and PubSubClient client 
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-MovingAverage <int> REF (10);       // create a moving average over last n values   // <----------- Change This as needed
-MovingAverage <int> FRZ (10);       // 10 * 120 sec = 1200sec = 20min
-
-#define MAX_RTEMP     40            // Max temperature for refrigerator             // <----------- Change This as needed
-#define MAX_FTEMP     25            // Max temperature for freezer
-
-// My topics
-#define RTEMP_TOPIC     "RSF/REF/Temp"                                              // <----------- Change These as needed
-#define FTEMP_TOPIC     "RSF/FRZ/Temp"
-#define RBATT_TOPIC     "RSF/REF/BATT"
-#define FBATT_TOPIC     "RSF/FRZ/BATT"
-#define RALARM_TOPIC    "RSF/REF/ALARM"
-#define FALARM_TOPIC    "RSF/FRZ/ALARM"
-#define BALARM_TOPIC    "RSF/BATT/ALARM"
-#define RMIN_TOPIC      "RSF/REF/MIN"
-#define RMAX_TOPIC      "RSF/REF/MAX"
-#define FMIN_TOPIC      "RSF/FRZ/MIN"
-#define FMAX_TOPIC      "RSF/FRZ/MAX"
-#define SUBSCRIBE_TOPIC "RSF/REF/RESET"
+ // create an instance of WiFi client 
+  WiFiClient espClient;
 
 
-#define AlarmTimeToWait          120L            // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
-#define BattAlarmTimeToWait     1440L            // Wait this amount of time for next alarm message, in Minutes
-
-unsigned long LastTimeRef  = 0;
-unsigned long LastTimeFrz  = 0;
-unsigned long LastTimeBatt = 0;
-bool R_Flag = false;
-bool F_Flag = false;
-bool B_Flag = false;
+#pragma region Globals
+  // WiFi information
+  // change it with your ssid-password
+  const char* ssid = "MySSID";                            // <----------- Change This
+  const char* password = "MyPass";                        // <----------- Change This
+#ifdef IF_EMAIL
+  const char* MySendToAddress = "yourEmailAddress";       // <----------- Change This for E-Mail
+#endif
+  uint8_t connection_state = 0;                    // Connected to WIFI or not
+  uint16_t reconnect_interval = 10000;             // If not connected wait time to try again
+#pragma endregion Globals
+  
+  #ifdef IF_MQTT
+   #include <PubSubClient.h>
    
-unsigned long currentMillis = 0;            // a 1 Minute clock timer
-unsigned long interval = 60000;             // = 60 sec --> 1 Minure
-unsigned long previousMillis = 0;
-unsigned long Minute = 0;
+    // MQTT Server IP Address or FQDN
+    const char* mqtt_server = "192.168.167.32";    // <----------- Change This
+  
+    // create an instance of PubSubClient client 
+    PubSubClient client(espClient);
+    
+    // My topics
+    #define RTEMP_TOPIC     "RSF/REF/Temp"                                              // <----------- Change These as needed
+    #define FTEMP_TOPIC     "RSF/FRZ/Temp"
+    #define RBATT_TOPIC     "RSF/REF/BATT"
+    #define FBATT_TOPIC     "RSF/FRZ/BATT"
+    #define RALARM_TOPIC    "RSF/REF/ALARM"
+    #define FALARM_TOPIC    "RSF/FRZ/ALARM"
+    #define BALARM_TOPIC    "RSF/BATT/ALARM"
+    #define RMIN_TOPIC      "RSF/REF/MIN"
+    #define RMAX_TOPIC      "RSF/REF/MAX"
+    #define FMIN_TOPIC      "RSF/FRZ/MIN"
+    #define FMAX_TOPIC      "RSF/FRZ/MAX"
+    #define SUBSCRIBE_TOPIC "RSF/REF/RESET"
+  #endif    // End of: #ifdef IF_MQTT
 
-unsigned long BlockFailCounter  = 0;
-unsigned long CRCFailCounter    = 0;
-
-char msg[50];                               // char string buffer
-
-//portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;    // <------------------------------------- esp32 only
-/* pin that is attached to interrupt */
-#define DATAPIN          12                 // interrupt pin
-byte interruptPin = DATAPIN;
-#define MyInterrupt (digitalPinToInterrupt(interruptPin))
-
-#define SQUELCHPIN       4                  // option for some receivers
-
-#define MyLED            2
-
-// define below are use in debug as trigers to logic analyzer
-#define MySync            15                // Trigger on Sync found
-#define MyBit             13                // Trigger on bit edge
-#define MyFrame           14                // Trigger at end of frame
+  
+  MovingAverage <int> REF (10);       // create a moving average over last n values   // <----------- Change This as needed
+  MovingAverage <int> FRZ (10);       // 10 * 120 sec = 1200sec = 20min
+  
+  #define MAX_RTEMP     40            // Max temperature for refrigerator             // <----------- Change This as needed
+  #define MAX_FTEMP     25            // Max temperature for freezer
+  
+  #define AlarmTimeToWait          120L            // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
+  #define BattAlarmTimeToWait     1440L            // Wait this amount of time for next alarm message, in Minutes
+  
+  unsigned long LastTimeRef  = 0;
+  unsigned long LastTimeFrz  = 0;
+  unsigned long LastTimeBatt = 0;
+  bool R_Flag = false;
+  bool F_Flag = false;
+  bool B_Flag = false;
+     
+  unsigned long currentMillis = 0;            // a 1 Minute clock timer
+  unsigned long interval = 60000;             // = 60 sec --> 1 Minure
+  unsigned long previousMillis = 0;
+  unsigned long Minute = 0;
+  
+  unsigned long BlockFailCounter  = 0;
+  unsigned long CRCFailCounter    = 0;
+  
+  char msg[50];                               // char string buffer
+  
+  //portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;    // <------------------------------------- esp32 only
+  /* pin that is attached to interrupt */
+  #define DATAPIN          12                 // interrupt pin
+  byte interruptPin = DATAPIN;
+  #define MyInterrupt (digitalPinToInterrupt(interruptPin))
+  
+  #define SQUELCHPIN       4                  // option for some receivers
+  
+  #define MyLED            2
+  
+  // define below are use in debug as trigers to logic analyzer
+  #define MySync            15                // Trigger on Sync found
+  #define MyBit             13                // Trigger on bit edge
+  #define MyFrame           14                // Trigger at end of frame
 
 /* ************************************************************* */
 #elif __AVR_ATmega1284P__      // MoteinoMega LoRa
 
-#define DATAPIN          10                // D10 is interrupt 0 on a Moteino Mega
-#define MyInterrupt       0
-#define SQUELCHPIN        4
-#define MyLED            15
-
-// define below are use in debug as trigers to logic analyzer
-#define MySync            12                // Trigger on Sync found
-#define MyBit             13                // Trigger on bit edge
-#define MyFrame           14                // Trigger at end of frame
+  #define DATAPIN          10                // D10 is interrupt 0 on a Moteino Mega
+  #define MyInterrupt       0
+  #define SQUELCHPIN        4
+  
+  #define MyLED            15
+  
+  // define below are use in debug as trigers to logic analyzer
+  #define MySync            12                // Trigger on Sync found
+  #define MyBit             13                // Trigger on bit edge
+  #define MyFrame           14                // Trigger at end of frame
 
 /* ************************************************************* */
 
 #elif ARDUINO_ARCH_ESP8266
-#Warning Processor is a  ESP8266
+  #Warning Processor is a  ESP8266
 #else
-#error CPU undefined.....
+  #error CPU undefined.....
 #endif
 
 
@@ -293,60 +319,112 @@ int FMaxTemp = 0;
 
 
 #if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
- /* ************************************************************* */
-void receivedCallback(char* topic, byte* payload, unsigned int length) 
-{
-  Serial.println("Message received: ");
-  Serial.println(topic);
+#ifdef IF_MQTT
+   /* ************************************************************* */
+  void receivedCallback(char* topic, byte* payload, unsigned int length) 
+  {
+    Serial.println("Message received: ");
+    Serial.println(topic);
+  
+    Serial.print("payload: ");
+    for (int i = 0; i < length; i++) 
+    {
+      Serial.print((char)payload[i]);
+    }
+    Serial.println();
+    if ((char)payload[0] == 'R') 
+    {
+      RMinTemp = 127;
+      RMaxTemp = 0;
+      FMinTemp = 127;
+      FMaxTemp = 0;
+    }
+  }
 
-  Serial.print("payload: ");
-  for (int i = 0; i < length; i++) 
+
+   /* ************************************************************* */
+  void mqttconnect() 
   {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-  if ((char)payload[0] == 'R') 
-  {
-    RMinTemp = 127;
-    RMaxTemp = 0;
-    FMinTemp = 127;
-    FMaxTemp = 0;
-  }
+    /* Loop until reconnected */
+    while (!client.connected()) 
+    {
+      Serial.println();
+      Serial.println("MQTT connecting ...");
+      
+      /* client ID */
+   //   String clientId = "ESP32_REF_Client"; 
+        String clientId = WiFi.macAddress();                // use our MAC address as MQTT Client ID
+   
+      /* connect now */
+      if (client.connect(clientId.c_str()))                  
+      {
+        Serial.print("MQTT connected, Client ID: ");
+        Serial.println(clientId);
+        /* subscribe topic with default QoS 0*/
+       client.subscribe(SUBSCRIBE_TOPIC);
+      } else 
+      {
+        Serial.print("failed, status code =");
+        Serial.print(client.state());
+        Serial.println("try again in 5 seconds");
+        /* Wait 5 seconds before retrying */
+        delay(5000);
+      }
+    }   // End of: while (!client.connected()) 
+  }   // End of:  mqttconnect() 
+
+#endif    // End of: IF_MQTT
+
+
+/* ************************************************************* */
+uint8_t WiFiConnect(const char* nSSID = nullptr, const char* nPassword = nullptr)
+{
+   static uint16_t attempt = 0;
+   Serial.print("Connecting to ");
+   if(nSSID) {
+       WiFi.begin(nSSID, nPassword);  
+       Serial.println(nSSID);
+   } else {
+       WiFi.begin(ssid, password);
+       Serial.println(ssid);
+   }
+
+   uint8_t i = 0;
+   while(WiFi.status()!= WL_CONNECTED && i++ < 50)
+   {
+       delay(200);
+       Serial.print(".");
+   }
+   ++attempt;
+   Serial.println("");
+   if(i == 51) {
+       Serial.print("Connection: TIMEOUT on attempt: ");
+       Serial.println(attempt);
+       if(attempt % 2 == 0)
+           Serial.println("Check if access point available or SSID and Password\r\n");
+       return false;
+   }
+   Serial.println("Connection: ESTABLISHED");
+   Serial.print("Got IP address: ");
+   Serial.println(WiFi.localIP());
+   return true;
 }
 
-
- /* ************************************************************* */
-void mqttconnect() 
+/* ************************************************************* */
+void Awaits()
 {
-  /* Loop until reconnected */
-  while (!client.connected()) 
-  {
-    Serial.println();
-    Serial.println("MQTT connecting ...");
-    
-    /* client ID */
- //   String clientId = "ESP32_REF_Client"; 
-      String clientId = WiFi.macAddress();                // use our MAC address as MQTT Client ID
- 
-    /* connect now */
-    if (client.connect(clientId.c_str()))                  
-    {
-      Serial.print("MQTT connected, Client ID: ");
-      Serial.println(clientId);
-      /* subscribe topic with default QoS 0*/
-     client.subscribe(SUBSCRIBE_TOPIC);
-    } else 
-    {
-      Serial.print("failed, status code =");
-      Serial.print(client.state());
-      Serial.println("try again in 5 seconds");
-      /* Wait 5 seconds before retrying */
-      delay(5000);
-    }
-  }   // End of: while (!client.connected()) 
-}   // End of:  mqttconnect() 
+   uint32_t ts = millis();
+   while(!connection_state)
+   {
+       delay(200);
+       if(millis() > (ts + reconnect_interval) && !connection_state){
+           connection_state = WiFiConnect();
+           ts = millis();
+       }
+   }
+}
 
-#endif
+#endif    // End of: #if defined  (ARDUINO_ARCH_ESP32)....
 
 
  /* ************************************************************* */
@@ -521,10 +599,6 @@ void interrupt_handler()
           detachInterrupt(MyInterrupt);             // disable interrupt to avoid new data corrupting the buffer
           received = true;   
         }
-        else
-        {
-           detachInterrupt(MyInterrupt);            // disable interrupt to avoid new data corrupting the buffer
-           received = true;
            
 #ifdef MyDEBUG 
         digitalWrite (MyFrame, HIGH); 
@@ -532,9 +606,12 @@ void interrupt_handler()
         digitalWrite (MyFrame, LOW);
 #endif  
       
-        }   // end of else
+
     }    // end of if syncFound
 }    // end of interrupt_handler
+
+
+
 
 
 /* ************************************************************* */
@@ -588,22 +665,30 @@ void setup()
 
 // Setup WiFi
 // WiFi.config(ip, dns, gateway, subnet);
- 
+
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-  while (WiFi.status() != WL_CONNECTED) 
-  {
-    delay(500);
-    Serial.print(".");
-    //esp_wifi_wps_start(0);
-  }
+  connection_state = WiFiConnect();
+  if(!connection_state)                     // if not connected to WIFI
+       Awaits();                            // constantly trying to connect
+
+//  while (WiFi.status() != WL_CONNECTED) 
+//  {
+//    delay(500);
+//    Serial.print(".");
+//    //esp_wifi_wps_start(0);
+//  }
+
     delay (1000);
-  
+
+#ifdef IF_MQTT
   /* configure the MQTT server with IPaddress and port */
   client.setServer(mqtt_server, 1883);
   /* this receivedCallback function will be invoked 
   when client received subscribed topic */
   client.setCallback(receivedCallback);
+#endif    // End of: #ifdef IF_MQTT
 
 #elif __AVR_ATmega1284P__      // Moteino Mega LoRa
 #ifdef RFM69
@@ -619,7 +704,7 @@ void setup()
   radio.setSensitivityBoost(SENSITIVITY_BOOST_HIGH);
   radio.setFrequencyMHz(433.92);
   radio.receiveBegin();
-#endif
+#endif    // End of: RFM69
 
 #endif
 
@@ -657,9 +742,24 @@ void MaxRefrigeratorAlarm (int temp)
 { 
   if (R_Flag == false)                         // see if this is 1st time here for this alarm...
    {
+#ifdef IF_MQTT      
       snprintf (msg, 6, "%d", temp);
       client.publish (RALARM_TOPIC, msg);
-      Serial.println ("Refrigerator Alarm");           
+#endif
+#ifdef IF_EMAIL
+     Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
+     String subject = "RSF Refrigerator Alarm!";
+     snprintf (msg, 50, "Temperature is: %d", temp);
+     if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
+         Serial.println("E-mail Message E-mail send.");
+     } else {
+         Serial.print("Error sending message: ");
+         Serial.println(gsender->getError());
+     }
+
+#endif
+      Serial.println ("Refrigerator Alarm"); 
+          
       R_Flag = true;
       LastTimeRef = Minute;                   // save the current time
    }
@@ -676,8 +776,23 @@ void MaxFreezerAlarm(int temp)
 {
   if (F_Flag == false)                         // see if this is 1st time here for this alarm...
    {
+#ifdef IF_MQTT
       snprintf (msg, 6, "%d", temp);
       client.publish (FALARM_TOPIC, msg);
+#endif
+
+#ifdef IF_EMAIL
+     Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
+     String subject = "RSF Freezer Alarm!";
+     snprintf (msg, 50, "Temperature is: %d", temp);
+     if(gsender->Subject(subject)->Send("lafleur@lafleur.us", msg)) {
+         Serial.println("E-Mail Message send.");
+     } else {
+         Serial.print("Error sending E-Mail message: ");
+         Serial.println(gsender->getError());
+     }
+
+#endif
       Serial.println ("Freezer Alarm");    
       F_Flag = true;
       LastTimeFrz = Minute;                    // save the current time
@@ -703,7 +818,19 @@ void BatteryLowAlarm (int device)
         snprintf (msg, 50, "Battery Low, Frezzer Sensor: %d", device);
         Serial.println ("Battery Low Alarm 2F");  
       }
-      client.publish (BALARM_TOPIC, msg);  
+#ifdef IF_MQTT
+      client.publish (BALARM_TOPIC, msg);
+#endif
+#ifdef IF_EMAIL
+     Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
+     String subject = "RSF Low Battery Alarm!";
+     if(gsender->Subject(subject)->Send("lafleur@lafleur.us", msg)) {
+         Serial.println("E-Mail Message send.");
+     } else {
+         Serial.print("Error sending E-Mail message: ");
+         Serial.println(gsender->getError());
+     }
+#endif
       B_Flag = true;
       LastTimeBatt = Minute;                    // save the current time
    }
@@ -717,6 +844,7 @@ void BatteryLowAlarm (int device)
 /* ************************************************************* */
 void MQTT_Send (void)
 {
+#ifdef IF_MQTT
 // send sensor number, 1R or 2R temperature and battery status, and alarm status to MQTT server
 
           // get temperature, -temperature is in Sign and magnitude format
@@ -767,8 +895,10 @@ void MQTT_Send (void)
               if (Ref_Temp >= MAX_RTEMP)  { MaxRefrigeratorAlarm(Ref_Temp); }
               else { R_Flag = false; }   // no alarm now
               }   
-
+#endif
 }   // End of MQTTSend
+
+
 
 #endif    // end of: #if defined  (ARDUINO_ARCH_ESP32)...
 
@@ -786,14 +916,16 @@ void MQTT_Send (void)
 void loop()
 {
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266) 
-/* if client was disconnected then try to reconnect again */
+#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
+#ifdef IF_MQTT 
+  /* if client was disconnected then try to reconnect again */
    if (!client.connected()) {
      mqttconnect();
    }
-/* this function will listen for incomming 
+  /* this function will listen for incomming 
   subscribed topic-process-invoke receivedCallback */
    client.loop();
+#endif  
 #endif    // end of defined  (ARDUINO_ARCH_ESP32)....
 
 // lets setup a long duration timer at 1 minute tick
@@ -829,7 +961,7 @@ void loop()
 
       ringIndex = (syncIndex - (SYNCPULSEEDGES-1)) % RING_BUFFER_SIZE;
 
-      for( int i = 0; i < (SYNCPULSECNT + DATABITSCNT); i++ )
+      for ( int i = 0; i < (SYNCPULSECNT + DATABITSCNT); i++ )
       {
          int bit = convertTimingToBit( pulseDurations[ringIndex % RING_BUFFER_SIZE], 
                                        pulseDurations[(ringIndex + 1) % RING_BUFFER_SIZE] );
@@ -878,7 +1010,7 @@ void loop()
 
 #ifdef DISPLAY_DATA_BYTES
 
-      if( fail )
+      if (fail )
         { Serial.println("Data Byte Display --> Decoding error."); }
       else
         {
@@ -908,7 +1040,7 @@ void loop()
     for (unsigned char i=0; i <= 4; i++)  { dataBytes[i] = reverse8(dataBytes[i]); }
 
 /* ************************************************************* */
-        if (!fail)                                                // if fail, we decode some bits wrong, so don't process this block
+        if (!fail)                                                // if fail, we decoded some bits wrong, so don't process this block
         {
           if ( crc8le(dataBytes, 4, 0x07, 0) == dataBytes[4] )    // if CRC8 is good... 
           {
@@ -944,36 +1076,35 @@ void loop()
               Serial.print (", CRC Error Counter: ");
               Serial.println (CRCFailCounter);
               
-  #endif    //  end of MyDEBUG
+  #endif    //  End of MyDEBUG
              
 #endif      // VERBOSE_OUTPUT           
 
 #if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
 
           // Send data to MQTT server
-          MQTT_Send ();                           // sending MQTT messages
-
-          // Send E-Mail or SMS Message
-          // to do....
+              MQTT_Send ();                           // sending MQTT messages
 
 #endif    // end of defined  (ARDUINO_ARCH_ESP32)...
          
           }   // End of if (crc8le...
           else  
-          {
-            
-  #ifdef MyDEBUG
-            Serial.print (Minute);                                    // Print CRC8 information
-            Serial.print ( " CRC: is: ");
-            Serial.print ( dataBytes[4], HEX );
-            Serial.print ( " Should be: ");
-            Serial.println ( crc8le(dataBytes, 4, 0x07, 0), HEX);     // I know, this is a wast of time to do this again...
-  #endif
-            CRCFailCounter++;                                         // if CRC is bad, keep count
-            }
+            {
+              
+    #ifdef MyDEBUG
+              Serial.print (Minute);                                    // Print CRC8 information
+              Serial.print ( " CRC: is: ");
+              Serial.print ( dataBytes[4], HEX );
+              Serial.print ( " Should be: ");
+              Serial.println ( crc8le(dataBytes, 4, 0x07, 0), HEX);     // I know, this is a wast of time to do this again...
+    #endif
+              CRCFailCounter++;                                         // if CRC is bad, keep count
+              }
           
         }   // End of if (!fail)...
-        else { BlockFailCounter++; }                                  // if block decode is bad, keep count
+        
+        else 
+          { BlockFailCounter++; }                                  // if block decode is bad, keep count
           
       received = false;
       syncFound = false;
