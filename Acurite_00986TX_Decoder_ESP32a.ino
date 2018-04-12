@@ -48,7 +48,7 @@
  *  on each changing edge of the data stream from the RF module
  *  and recording the time in uSec between each edge.
  *
- * 8 measured hi and lo pulses in a row, 4 high and 4 low, of 
+ * 8 measured hi and lo edges in a row, 4 high and 4 low, of 
  *  approximately 1500 uSec each constitute a sync stream.
  *
  * The remaining 40 bits of data, or 80 edges, are measured
@@ -59,16 +59,21 @@
  * As a note: often the 1st sync pulse high is ~2300us long, last one is
  *  ~1300us long.
  *  
- *  Temperature is sent to MQTT server if using a ESP32 or ESP8266 processor
  *  
  *  MQTT
  *    A message sent to this device by topic: SUBSCRIBE_TOPIC, with a "R"
  *     in the 1st byte will reset all Min/Max settings
  *     
+ *    Temperature is sent to MQTT server if using a ESP32 or ESP8266 processor
+ *     
  *  MQTT Data Sent:
  *    Temperature, Min, Max and Battery Status for both devices
- *    Alarms for over-temperature and Low Battery
+ *     Alarms for over-temperature and Low Battery
  *    
+ *  E-Mail:
+ *    If enable, alarms are also send via E-mail or SMS
+ *     http://www.emailtextmessages.com/
+ *  
  *  Integration time for alarms can be set for each sensor.     
  *  
  *  Radio:
@@ -96,21 +101,22 @@
  *  07-Apr-2018 1.0c  TRL - Added support for ESP32 and MQTT
  *  08-Apr-2018 1.0d  TRL - Added Min/Max reporting and resetting via MQTT
  *  10-Apr-2018 1.0e  TRL - Added E-Mail support
+ *  12-Apr-2018 1.0f  TRL - Added I2C OLE display, removed Moteino Mega
  *  
  *  
  *  Notes:  1)  Tested with Arduino 1.8.5
- *          2)  Testing using Moteino Mega Rev4 with 433Mhz RFM69 
+ *          2)  Testing with a 433Mhz RFM69 
  *                RFM69OOK lib from https://github.com/kobuki/RFM69OOK
  *                DIO2 connected to pin interrupt pin.
  *          3)  Tested with a RXB6 receiver connected to interrupt pin.
  *          4)  Tested using a TTGO R1 ESP32 module
- *          5)  ESP32 amd ESP8266 supports sending data via MQTT or E-Mail
+ *          5)  ESP32 and ESP8266 supported sending data via MQTT and E-Mail
  *          6)  ESP8266 tested with a NodeMCU 1.0
- *          7)  Added E-mail-SMS Support NOTE: you must edit Gsender.h with your info
- *          8)  
+ *          7)  Added E-mail-SMS Support NOTE: You must edit Gsender.h with your info
+ *          8)
  *          
  *  Todo:   1) Fix issues with RFM69 receiver, work in progress, not working
- *          2) Move MyDebug define's inside processor type
+ *          2) move MyDebug define's inside processor type
  *          3) 
  *          4) 
  *          5) 
@@ -120,14 +126,15 @@
  */
 
  /* ************************************************************* */
-
-//#define RFM69
 #define VERBOSE_OUTPUT
 //#define DISPLAY_BIT_TIMING
 //#define DISPLAY_DATA_BYTES
 #define MyDEBUG
 #define IF_MQTT
 #define IF_EMAIL
+//#define RFM69
+#define OLED U8X8_SSD1306_128X64_NONAME_HW_I2C            // OLED-Display on board
+
 
 #ifdef RFM69
   #include <RFM69OOK.h>
@@ -141,69 +148,67 @@
 // so 44 * 2 = 88,  round up to a power of 2, --> 128 for now
 #define RING_BUFFER_SIZE  128
 
-#define SYNC_HIGH             1700          // Sync high time
-#define SYNC_LOW              1400          // Sync low time (last sync pulse is ~1300us)
-#define SYNC_TOLL             650           // +- Tolerance for sync timming
+#define SYNC_MAX              2600          // Sync high time
+#define SYNC_MIN              1300          // Sync low time (last sync pulse is ~1300us)
 
 #define PULSE_BIT1            900           // Bit 1 time in us
-#define PULSE_BIT0            550           // Bit 0 time in us
-#define PULSE_TOLL            100           // +- Tolerance for bit timming
-#define PRE_PULSE             200           // On pulse prior to data
+#define PULSE_BIT0            500           // Bit 0 time in us
+#define PULSE_TOLL            120           // +- Tolerance for bit timming
+#define PRE_PULSE             190           // On pulse prior to data
 
-#define PULSE_SHORT_NOISE     PRE_PULSE-50            // anything shorter that this is noise, Pre pulse is ~200US
-#define PULSE_LONG_NOISE      SYNC_HIGH+SYNC_TOLL+1   // anything longer that this is noise
+#define PULSE_SHORT_NOISE     PRE_PULSE     // anything shorter that this is noise, Pre pulse is ~200US
+#define PULSE_LONG_NOISE      SYNC_MAX      // anything longer that this is noise
 
 
-// On the arduino connect the data pin, the pin that will be 
+// On the Arduino connect the data pin, the pin that will be 
 // toggling with the incomming data from the RF module, to
-// digital pin 10. Pin D10 is interrupt 0 and can be configured
-// for interrupt on change, change to high or low.
-
-// The squelch pin in an input to the radio that squelches, or
-// blanks the incoming data stream. Use the squelch pin to 
-// stop the data stream and prevent interrupts between the 
-// data packets if desired. (not used at this time)
-
+// a pin that can be configured for interrupt 
+// on change, change to high or low.
 
 
 #include <Arduino.h>
+#include <stdarg.h>
+#include <Wire.h>         // http://arduino.cc/en/Reference/Wire ??
+#include "Gsender.h"
+#include "MovingAverage.h"
+
+// OLED Display 
+#include <U8g2lib.h>      // https://github.com/olikraus/u8g2
 
 /* ************************************************************* */
 // Select processor includes
 #ifdef ARDUINO_ARCH_ESP32
   #include <WiFi.h>
   #include <esp_wps.h>
-  #include "Gsender.h"
   #include <WiFiClientSecure.h>
-  #include "MovingAverage.h"
 #endif
 #ifdef ARDUINO_ARCH_ESP8266
   #include <ESP8266WiFi.h>
-  #include "Gsender.h"
   #include <WiFiClientSecure.h>
-  #include "MovingAverage.h"
 #endif
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
+#define SKETCHNAME    "Started, Acu-rite 0986 Decoder, "
+#define SKETCHVERSION "Ver: 1.0f"
 
- // create an instance of WiFi client 
+// create an instance of WiFi client 
   WiFiClient espClient;
 
-
-#pragma region Globals
   // WiFi information
   // change it with your ssid-password
-  const char* ssid = "MySSID";                            // <----------- Change This
-  const char* password = "MyPass";                        // <----------- Change This
+  const char* ssid = "MySSID";                 // <----------- Change This
+  const char* password = "MyPass";       // <----------- Change This
+  
 #ifdef IF_EMAIL
-  const char* MySendToAddress = "yourEmailAddress";       // <----------- Change This for E-Mail
+   const char* MySendToAddress = "MyEmail";                                 // <----------- Change This for E-Mail
+// const char* MySendToAddress = "MyPhone@vtext.com";                                  // <----------- Change This for SMS
+//      For SMS format, see -->   http://www.emailtextmessages.com/
 #endif
+
   uint8_t connection_state = 0;                    // Connected to WIFI or not
   uint16_t reconnect_interval = 10000;             // If not connected wait time to try again
-#pragma endregion Globals
   
-  #ifdef IF_MQTT
-   #include <PubSubClient.h>
+#ifdef IF_MQTT
+    #include <PubSubClient.h>
    
     // MQTT Server IP Address or FQDN
     const char* mqtt_server = "192.168.167.32";    // <----------- Change This
@@ -212,7 +217,7 @@
     PubSubClient client(espClient);
     
     // My topics
-    #define RTEMP_TOPIC     "RSF/REF/Temp"                                              // <----------- Change These as needed
+    #define RTEMP_TOPIC     "RSF/REF/Temp"                                           // <----------- Change These as needed
     #define FTEMP_TOPIC     "RSF/FRZ/Temp"
     #define RBATT_TOPIC     "RSF/REF/BATT"
     #define FBATT_TOPIC     "RSF/FRZ/BATT"
@@ -224,13 +229,28 @@
     #define FMIN_TOPIC      "RSF/FRZ/MIN"
     #define FMAX_TOPIC      "RSF/FRZ/MAX"
     #define SUBSCRIBE_TOPIC "RSF/REF/RESET"
-  #endif    // End of: #ifdef IF_MQTT
+#endif    // End of: #ifdef IF_MQTT
+
+
+// Hardware pin definitions for TTGOv1 Board with OLED SSD1306 I2C Display
+#define OLED_RST 16         // ESP32 GPIO16 (Pin16) -- SD1306 Reset
+#define OLED_SCL 15         // ESP32 GPIO15 (Pin15) -- SD1306 Clock
+#define OLED_SDA 4          // ESP32 GPIO4  (Pin4)  -- SD1306 Data
+
+
+// create an instance for OLED Display
+#ifdef OLED
+    OLED u8x8(OLED_RST, OLED_SCL, OLED_SDA);
+#else
+   U8X8_NULL u8x8;
+#endif
+
+// create an instance for Moving Average
+  MovingAverage <int> REF (7);        // create a moving average over last n values   // <----------- Change This as needed
+  MovingAverage <int> FRZ (7);        // 10 * 120 sec = 1200sec = 20min
 
   
-  MovingAverage <int> REF (10);       // create a moving average over last n values   // <----------- Change This as needed
-  MovingAverage <int> FRZ (10);       // 10 * 120 sec = 1200sec = 20min
-  
-  #define MAX_RTEMP     40            // Max temperature for refrigerator             // <----------- Change This as needed
+  #define MAX_RTEMP     45            // Max temperature for refrigerator             // <----------- Change This as needed
   #define MAX_FTEMP     25            // Max temperature for freezer
   
   #define AlarmTimeToWait          120L            // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
@@ -251,41 +271,41 @@
   unsigned long BlockFailCounter  = 0;
   unsigned long CRCFailCounter    = 0;
   
-  char msg[50];                               // char string buffer
-  
-  //portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;    // <------------------------------------- esp32 only
+  char msg[60];                               // char string buffer
+
+
+
+/* ************************************************************* */
+#ifdef ARDUINO_ARCH_ESP32
   /* pin that is attached to interrupt */
   #define DATAPIN          12                 // interrupt pin
   byte interruptPin = DATAPIN;
   #define MyInterrupt (digitalPinToInterrupt(interruptPin))
   
-  #define SQUELCHPIN       4                  // option for some receivers
-  
-  #define MyLED            2
+  #define MyLED             2
   
   // define below are use in debug as trigers to logic analyzer
-  #define MySync            15                // Trigger on Sync found
-  #define MyBit             13                // Trigger on bit edge
-  #define MyFrame           14                // Trigger at end of frame
+  #define MySync            36                // Trigger on Sync found
+  #define MyBit             37                // Trigger on bit edge
+  #define MyFrame           38                // Trigger at end of frame
+
 
 /* ************************************************************* */
-#elif __AVR_ATmega1284P__      // MoteinoMega LoRa
-
-  #define DATAPIN          10                // D10 is interrupt 0 on a Moteino Mega
-  #define MyInterrupt       0
-  #define SQUELCHPIN        4
-  
-  #define MyLED            15
-  
-  // define below are use in debug as trigers to logic analyzer
-  #define MySync            12                // Trigger on Sync found
-  #define MyBit             13                // Trigger on bit edge
-  #define MyFrame           14                // Trigger at end of frame
-
-/* ************************************************************* */
-
 #elif ARDUINO_ARCH_ESP8266
-  #Warning Processor is a  ESP8266
+
+  #define DATAPIN            D1                // D1 is interrupt
+  byte interruptPin = DATAPIN;
+  #define MyInterrupt (digitalPinToInterrupt(interruptPin))
+ 
+  // Note: their are two LED on the NodeMCU Rev1 board
+  // D0-->16 on the board and D4-->2 on the ESP12 that is connected to U1-TXD
+  #define MyLED             16
+  
+  // define below are use in debug as trigers to logic analyzer
+  //#define MySync            D0                // Trigger on Sync found
+  //#define MyBit             D1                // Trigger on bit edge
+  //#define MyFrame           D2                // Trigger at end of frame
+  
 #else
   #error CPU undefined.....
 #endif
@@ -298,7 +318,6 @@
 #define DATABYTESCNT      5                   // Number of bytes to look for 
 #define DATABITSCNT       (DATABYTESCNT * 8)  // Number of bits to look for
 #define DATABITSEDGES     (DATABITSCNT * 2)   // Number of edges to look for
-
 
 // The pulse durations are measured in micro seconds between
 // pulse edges.
@@ -317,10 +336,18 @@ int RMaxTemp = 0;
 int FMinTemp = 127;                         // Max temp is 127deg
 int FMaxTemp = 0;
 
+#ifdef OLED
+void init_display(void) 
+{
+    u8x8.begin();
+    u8x8.setFont(u8x8_font_chroma48medium8_r);
+    u8x8.clear();
+    u8x8.setFlipMode(1);
+}
+#endif // OLED
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
 #ifdef IF_MQTT
-   /* ************************************************************* */
+/* ************************************************************* */
   void receivedCallback(char* topic, byte* payload, unsigned int length) 
   {
     Serial.println("Message received: ");
@@ -342,17 +369,17 @@ int FMaxTemp = 0;
   }
 
 
-   /* ************************************************************* */
+/* ************************************************************* */
   void mqttconnect() 
   {
     /* Loop until reconnected */
     while (!client.connected()) 
     {
       Serial.println();
-      Serial.println("MQTT connecting ...");
+      Serial.print("MQTT connecting to: ");
+      Serial.println (mqtt_server);
       
       /* client ID */
-   //   String clientId = "ESP32_REF_Client"; 
         String clientId = WiFi.macAddress();                // use our MAC address as MQTT Client ID
    
       /* connect now */
@@ -380,7 +407,8 @@ int FMaxTemp = 0;
 uint8_t WiFiConnect(const char* nSSID = nullptr, const char* nPassword = nullptr)
 {
    static uint16_t attempt = 0;
-   Serial.print("Connecting to ");
+   WiFi.disconnect(); 
+   Serial.print("Connecting WiFi to: ");
    if(nSSID) {
        WiFi.begin(nSSID, nPassword);  
        Serial.println(nSSID);
@@ -400,12 +428,11 @@ uint8_t WiFiConnect(const char* nSSID = nullptr, const char* nPassword = nullptr
    if(i == 51) {
        Serial.print("Connection: TIMEOUT on attempt: ");
        Serial.println(attempt);
-       if(attempt % 2 == 0)
-           Serial.println("Check if access point available or SSID and Password\r\n");
+       WiFi.disconnect(); 
        return false;
    }
    Serial.println("Connection: ESTABLISHED");
-   Serial.print("Got IP address: ");
+   Serial.print  ("Got IP address: ");
    Serial.println(WiFi.localIP());
    return true;
 }
@@ -417,14 +444,15 @@ void Awaits()
    while(!connection_state)
    {
        delay(200);
-       if(millis() > (ts + reconnect_interval) && !connection_state){
+       if(millis() > (ts + reconnect_interval) && !connection_state)
+       {
            connection_state = WiFiConnect();
            ts = millis();
        }
+
+     ESP.restart();     // <---------------- experiment 
    }
 }
-
-#endif    // End of: #if defined  (ARDUINO_ARCH_ESP32)....
 
 
  /* ************************************************************* */
@@ -498,6 +526,7 @@ uint8_t crc8le(uint8_t const message[], unsigned nBytes, uint8_t polynomial, uin
  * idx is index of last captured bit duration.
  * Search backwards 8 times looking for 4 pulses
  * approximately 1600 uS long.
+ * T0 is the high pulse, T1 is the low pulse
  */
 bool isSync(unsigned int idx) 
 {
@@ -505,15 +534,14 @@ bool isSync(unsigned int idx)
    for( int i = 0; i < SYNCPULSEEDGES; i += 2 )
    {
       unsigned long t1 = pulseDurations[(idx+RING_BUFFER_SIZE-i) % RING_BUFFER_SIZE];
-      unsigned long t0 = pulseDurations[(idx+RING_BUFFER_SIZE-i-1) % RING_BUFFER_SIZE];    
+      unsigned long t0 = pulseDurations[(idx+RING_BUFFER_SIZE-i-1) % RING_BUFFER_SIZE];      
       
       // if any of the preceeding 8 pulses are out of bounds, short or long,
-      // return false, no sync found
-      if( t0 < (SYNC_HIGH-SYNC_TOLL) || t0 > (SYNC_HIGH+SYNC_TOLL) ||
-          t1 < (SYNC_LOW-SYNC_TOLL)  || t1 > (SYNC_LOW+SYNC_TOLL) )
-      {
-         return false;
-      }
+      // return false, if no sync found
+      if( t0 < (SYNC_MIN) || t0 > (SYNC_MAX) ||  t1 < (SYNC_MIN)  || t1 > (SYNC_MAX) )
+        {
+           return false;
+        }
    }
    return true;
 }
@@ -521,7 +549,6 @@ bool isSync(unsigned int idx)
 
 /* ************************************************************* */
 /* Interrupt  handler 
- * Tied to pin 10 INT0 of Moteino Mega
  * Set to interrupt on edge (level change) high or low transition.
  * Change the state of the Arduino LED on each interrupt. 
  */
@@ -535,9 +562,9 @@ void interrupt_handler()
 
    // Ignore if we haven't finished processing the previous 
    // received signal in the main loop.
-   if( received == true ) {return;}
+   if( received == true ) {return;}       // return, we are not finish with processor last block
 
-   bitState = digitalRead(DATAPIN);
+   bitState = digitalRead (DATAPIN);
    digitalWrite(MyLED, bitState);         // LED to show receiver activity
 
    // calculating timing since last change
@@ -545,49 +572,50 @@ void interrupt_handler()
    duration = time - lastTime;
    lastTime = time;
 
-   // Known errors in bit stream is are runt/short and long pulses.
+   // Known errors in bit stream are runt's --> short and long pulses.
    // If we ever get a really short, or really long 
    // pulse's we know there is an error in the bit stream
    // and should start over.
-   if ( (duration > (PULSE_LONG_NOISE)) || (duration < (PULSE_SHORT_NOISE)) )    // This must be noise...  
+   if ( (duration > (PULSE_LONG_NOISE)) || (duration < (PULSE_SHORT_NOISE)) )    // This pulse must be noise...  
    {
       received = false;
       syncFound = false;
-      changeCount = 0;                          // restart, start looking for data bits again
+      changeCount = 0;                                  // restart, start looking for data bits again
    }
 
    // if we have good data, store data in ring buffer
    ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
    pulseDurations[ringIndex] = duration;
-   changeCount++;                               // found another edge
+   changeCount++;                                       // found another edge
 
 #ifdef MyDEBUG
-      digitalWrite (MyBit, HIGH);          
-      delayMicroseconds (1);
-      digitalWrite (MyBit, LOW);
+      digitalWrite(MyBit, !digitalRead(MyBit) );        // LED to show we have a bit
+     // digitalWrite (MyBit, LOW);          
+     // delayMicroseconds (50);
+     // digitalWrite (MyBit, HIGH);
 #endif
 
    // detected sync signal
-   if( isSync (ringIndex) )                       // check for sync
+   if( isSync (ringIndex) )                              // check for sync on each bit received
    {
       syncFound = true;
-      changeCount = 0;                            // lets restart looking for data bits again
+      changeCount = 0;                                   // lets restart looking for data bits again
       syncIndex = ringIndex;
       dataIndex = (syncIndex + 1) % RING_BUFFER_SIZE;
 
 #ifdef MyDEBUG
-      digitalWrite (MySync, HIGH);          
-      delayMicroseconds (1);
-      digitalWrite (MySync, LOW);
-#endif
-     
+      digitalWrite(MySync, !digitalRead(MySync) );        // LED to show we have sync
+//      digitalWrite (MySync, LOW);          
+//      delayMicroseconds (50);
+//      digitalWrite (MySync, HIGH);
+#endif    
     }
-
+    
    // If a sync has been found, then start looking for the
    //  data bit edges in DATABITSEDGES
    if( syncFound )
    {       
-      // not enough bits yet, so no full message has been received yet
+      // not enough bits yet, so no full message block has been received yet
       if( changeCount < DATABITSEDGES )            
         { received = false; }
       
@@ -595,15 +623,16 @@ void interrupt_handler()
       
       if( changeCount >= DATABITSEDGES )            // check for too many bits
         {      
-          changeCount = DATABITSEDGES;              // lets keep bits we have, CRC will kill if bad
+          changeCount = DATABITSEDGES;              // lets keep bits we have, CRC will kill this block if bad
           detachInterrupt(MyInterrupt);             // disable interrupt to avoid new data corrupting the buffer
           received = true;   
         }
            
-#ifdef MyDEBUG 
-        digitalWrite (MyFrame, HIGH); 
-        delayMicroseconds (100);
-        digitalWrite (MyFrame, LOW);
+#ifdef MyDEBUG
+        digitalWrite(MyFrame, !digitalRead(MyFrame) );         // LED to show that we have block
+//        digitalWrite (MyFrame, LOW); 
+//        delayMicroseconds (100);
+//        digitalWrite (MyFrame, HIGHƒ);
 #endif  
       
 
@@ -611,8 +640,7 @@ void interrupt_handler()
 }    // end of interrupt_handler
 
 
-
-
+const char compile_date[]  = __DATE__ ", " __TIME__;
 
 /* ************************************************************* */
 /* ************************************************************* */
@@ -621,19 +649,21 @@ void setup()
 {
    Serial.begin(115200);
    delay(2000);
+   
    Serial.println("");
-   Serial.print("Started Acu-rite 0986 Decoder, ");
+   Serial.print(SKETCHNAME);
 #ifdef RFM69
-    Serial.println("RFM69");
+   Serial.println("RFM69");
 #else
    Serial.println("External Receiver");
 #endif
-
+  Serial.println (SKETCHVERSION);
+  Serial.println (compile_date);
+  Serial.println("");
+ 
    pinMode(DATAPIN, INPUT);             // data interrupt pin set for input
    pinMode(MyLED, OUTPUT);              // LED output
-
-   pinMode(SQUELCHPIN, OUTPUT);         // data squelch pin on radio module
-   digitalWrite(SQUELCHPIN, HIGH);      // UN-squelch data
+   digitalWrite (MyLED, LOW);
 
 #ifdef MyDEBUG
    pinMode(MySync, OUTPUT);              // sync bit output
@@ -647,7 +677,6 @@ void setup()
 #endif
 
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)       // ESP32 TTgo V1
 #ifdef RFM69
     pinMode( 14, INPUT);        // RFM69 RST
     //digitalWrite (14, LOW);
@@ -663,6 +692,7 @@ void setup()
     radio.receiveBegin();
 #endif
 
+
 // Setup WiFi
 // WiFi.config(ip, dns, gateway, subnet);
 
@@ -673,14 +703,8 @@ void setup()
   if(!connection_state)                     // if not connected to WIFI
        Awaits();                            // constantly trying to connect
 
-//  while (WiFi.status() != WL_CONNECTED) 
-//  {
-//    delay(500);
-//    Serial.print(".");
-//    //esp_wifi_wps_start(0);
-//  }
-
     delay (1000);
+
 
 #ifdef IF_MQTT
   /* configure the MQTT server with IPaddress and port */
@@ -690,22 +714,13 @@ void setup()
   client.setCallback(receivedCallback);
 #endif    // End of: #ifdef IF_MQTT
 
-#elif __AVR_ATmega1284P__      // Moteino Mega LoRa
-#ifdef RFM69
-  pinMode( 3, INPUT);         // RFM69 RST
-  //digitalWrite (3, LOW);
-  pinMode( 2, INPUT);         // DIO-0
-  pinMode(22, INPUT);         // DIO-1
-  pinMode(21, INPUT);         // DIO-2  This is where we get the RX data --> comnnected to INT-0
-  radio.initialize();
-  //radio.setBandwidth(OOK_BW_10_4);
-  radio.setRSSIThreshold(-70);
-  radio.setFixedThreshold(20);
-  radio.setSensitivityBoost(SENSITIVITY_BOOST_HIGH);
-  radio.setFrequencyMHz(433.92);
-  radio.receiveBegin();
-#endif    // End of: RFM69
 
+#ifdef OLED
+// initialize display  
+    init_display();     
+    u8x8.setCursor(0,1);
+    u8x8.drawString(0, 0,"0986 Decoder");
+    u8x8.printf("%d.%d.%d.%d",WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
 #endif
 
    pinMode(MyInterrupt, INPUT_PULLUP);
@@ -731,7 +746,6 @@ int convertTimingToBit(unsigned int t0, unsigned int t1)
 }
 
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)  
 
 /* ************************************************************* */
 // 0986TX send's a meassge every ~120 sec, so lets average temperature
@@ -749,11 +763,11 @@ void MaxRefrigeratorAlarm (int temp)
 #ifdef IF_EMAIL
      Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
      String subject = "RSF Refrigerator Alarm!";
-     snprintf (msg, 50, "Temperature is: %d", temp);
+     snprintf (msg, 60, "Alarm set at: %dF,  Temperature is: %dF", MAX_RTEMP, temp);
      if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
          Serial.println("E-mail Message E-mail send.");
      } else {
-         Serial.print("Error sending message: ");
+         Serial.print("Error, sending message: ");
          Serial.println(gsender->getError());
      }
 
@@ -784,8 +798,8 @@ void MaxFreezerAlarm(int temp)
 #ifdef IF_EMAIL
      Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
      String subject = "RSF Freezer Alarm!";
-     snprintf (msg, 50, "Temperature is: %d", temp);
-     if(gsender->Subject(subject)->Send("lafleur@lafleur.us", msg)) {
+     snprintf (msg, 60, "Alarm set at: %dF,  Temperature is: %dF", MAX_FTEMP, temp);
+     if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
          Serial.println("E-Mail Message send.");
      } else {
          Serial.print("Error sending E-Mail message: ");
@@ -821,10 +835,11 @@ void BatteryLowAlarm (int device)
 #ifdef IF_MQTT
       client.publish (BALARM_TOPIC, msg);
 #endif
+
 #ifdef IF_EMAIL
      Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
      String subject = "RSF Low Battery Alarm!";
-     if(gsender->Subject(subject)->Send("lafleur@lafleur.us", msg)) {
+     if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
          Serial.println("E-Mail Message send.");
      } else {
          Serial.print("Error sending E-Mail message: ");
@@ -856,6 +871,9 @@ void MQTT_Send (void)
              { 
               client.publish (FTEMP_TOPIC, msg);                          // send temperature
 
+              u8x8.setCursor(0,3);
+              u8x8.printf("Frz Temp: %dF",temp );
+
               if (temp > FMaxTemp) {FMaxTemp = temp;}
               if (temp < FMinTemp) {FMinTemp = temp;}
               
@@ -877,6 +895,9 @@ void MQTT_Send (void)
           else                                                           // Sensor 1, Refrigerator 
              { 
               client.publish (RTEMP_TOPIC, msg);
+
+              u8x8.setCursor(0,5);
+              u8x8.printf("Ref Temp: %dF",temp );
               
               if (temp > RMaxTemp) {RMaxTemp = temp;}
               if (temp < RMinTemp) {RMinTemp = temp;}
@@ -899,10 +920,6 @@ void MQTT_Send (void)
 }   // End of MQTTSend
 
 
-
-#endif    // end of: #if defined  (ARDUINO_ARCH_ESP32)...
-
-
 /* ************************************************************* */
 /* ************************************************************* */
 /* ************************************************************* */
@@ -916,7 +933,6 @@ void MQTT_Send (void)
 void loop()
 {
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
 #ifdef IF_MQTT 
   /* if client was disconnected then try to reconnect again */
    if (!client.connected()) {
@@ -926,7 +942,7 @@ void loop()
   subscribed topic-process-invoke receivedCallback */
    client.loop();
 #endif  
-#endif    // end of defined  (ARDUINO_ARCH_ESP32)....
+
 
 // lets setup a long duration timer at 1 minute tick
   currentMillis = millis ();                                  // get current time
@@ -945,9 +961,10 @@ void loop()
 
 /* ************************************************************* */
 // Print the bit stream for debugging. 
-// Generates a lot of chatter, normally disable this.    
+// Generates a lot of chatter, normally disable this. 
+// T0 is the length of the up pulse, or pre-pulse, T1 is the down pulse, or data pulse   
 #ifdef DISPLAY_BIT_TIMING
-
+      Serial.println("");
       Serial.print("syncFound = ");
       Serial.println(syncFound);
       Serial.print("changeCount = ");
@@ -968,16 +985,16 @@ void loop()
 
          Serial.print("bit ");
          Serial.print( i );
-         Serial.print(" = ");
+         Serial.print(" =  ");
          Serial.print(bit);
-         Serial.print(" t0 = ");
+         Serial.print(", t0 = ");
          Serial.print(pulseDurations [ringIndex % RING_BUFFER_SIZE]);
-         Serial.print(" t1 = ");
+         Serial.print(", t1 = ");
          Serial.println(pulseDurations [(ringIndex + 1) % RING_BUFFER_SIZE]);
 
          ringIndex += 2;
       }
-#endif // endif of DISPLAY_BIT_TIMING
+#endif // endif of: DISPLAY_BIT_TIMING
 
 
 /* ************************************************************* */
@@ -986,15 +1003,14 @@ void loop()
       fail = false;                             // reset bit decode error flag
 
       // clear the data bytes array
-      for( int i = 0; i < DATABYTESCNT; i++ )
-         { dataBytes[i] = 0; }
+      for( int i = 0; i < DATABYTESCNT; i++ )    { dataBytes[i] = 0; }
         
       ringIndex = (syncIndex +1 ) % RING_BUFFER_SIZE;
 
       for( int i = 0; i < DATABITSCNT; i++ )
       {
          int bit = convertTimingToBit ( pulseDurations[ringIndex % RING_BUFFER_SIZE], 
-                                       pulseDurations[(ringIndex +1 ) % RING_BUFFER_SIZE] ); 
+                                          pulseDurations[(ringIndex +1 ) % RING_BUFFER_SIZE] ); 
                                                                           
          if( bit < 0 )                 // check for a valid bit, ie: 1 or zero, -1 = error
            {  
@@ -1029,7 +1045,7 @@ void loop()
           Serial.print("  ");
         }
 
-#endif  // end of DISPLAY_DATA_BYTES
+#endif  // end of: DISPLAY_DATA_BYTES
 
 
 /* ************************************************************* */
@@ -1042,7 +1058,7 @@ void loop()
 /* ************************************************************* */
         if (!fail)                                                // if fail, we decoded some bits wrong, so don't process this block
         {
-          if ( crc8le(dataBytes, 4, 0x07, 0) == dataBytes[4] )    // if CRC8 is good... 
+          if ( crc8le (dataBytes, 4, 0x07, 0) == dataBytes[4] )    // if CRC8 is good... 
           {
 
  #ifdef VERBOSE_OUTPUT            
@@ -1080,14 +1096,11 @@ void loop()
              
 #endif      // VERBOSE_OUTPUT           
 
-#if defined  (ARDUINO_ARCH_ESP32) || defined (ARDUINO_ARCH_ESP8266)
-
           // Send data to MQTT server
               MQTT_Send ();                           // sending MQTT messages
 
-#endif    // end of defined  (ARDUINO_ARCH_ESP32)...
          
-          }   // End of if (crc8le...
+            }   // End of if (crc8le...
           else  
             {
               
