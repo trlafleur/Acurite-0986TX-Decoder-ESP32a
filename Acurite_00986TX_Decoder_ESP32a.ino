@@ -251,7 +251,7 @@
 
   
   #define MAX_RTEMP     45            // Max temperature for refrigerator             // <----------- Change This as needed
-  #define MAX_FTEMP     25            // Max temperature for freezer
+  #define MAX_FTEMP     20            // Max temperature for freezer
   
   #define AlarmTimeToWait          120L            // Wait this amount of time for next alarm message, in Minutes  // <----------- Change These as needed
   #define BattAlarmTimeToWait     1440L            // Wait this amount of time for next alarm message, in Minutes
@@ -336,6 +336,8 @@ int RMaxTemp = 0;
 int FMinTemp = 127;                         // Max temp is 127deg
 int FMaxTemp = 0;
 
+
+/* ************************************************************* */
 #ifdef OLED
 void init_display(void) 
 {
@@ -345,6 +347,7 @@ void init_display(void)
     u8x8.setFlipMode(1);
 }
 #endif // OLED
+
 
 #ifdef IF_MQTT
 /* ************************************************************* */
@@ -380,7 +383,7 @@ void init_display(void)
       Serial.println (mqtt_server);
       
       /* client ID */
-        String clientId = WiFi.macAddress();                // use our MAC address as MQTT Client ID
+       String clientId = WiFi.macAddress();                // use our MAC address as MQTT Client ID
    
       /* connect now */
       if (client.connect(clientId.c_str()))                  
@@ -437,6 +440,7 @@ uint8_t WiFiConnect(const char* nSSID = nullptr, const char* nPassword = nullptr
    return true;
 }
 
+
 /* ************************************************************* */
 void Awaits()
 {
@@ -491,6 +495,7 @@ uint8_t reverse8(uint8_t x)
     x = (x & 0xAA) >> 1 | (x & 0x55) << 1;
     return x;
 }
+
 
 /* ************************************************************* */
 // CRC8 for little endian format
@@ -765,7 +770,7 @@ void MaxRefrigeratorAlarm (int temp)
      String subject = "RSF Refrigerator Alarm!";
      snprintf (msg, 60, "Alarm set at: %dF,  Temperature is: %dF", MAX_RTEMP, temp);
      if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
-         Serial.println("E-mail Message E-mail send.");
+         Serial.println("E-mail Message sent.");
      } else {
          Serial.print("Error, sending message: ");
          Serial.println(gsender->getError());
@@ -800,9 +805,9 @@ void MaxFreezerAlarm(int temp)
      String subject = "RSF Freezer Alarm!";
      snprintf (msg, 60, "Alarm set at: %dF,  Temperature is: %dF", MAX_FTEMP, temp);
      if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
-         Serial.println("E-Mail Message send.");
+         Serial.println("E-Mail Message sent.");
      } else {
-         Serial.print("Error sending E-Mail message: ");
+         Serial.print("Error sending message: ");
          Serial.println(gsender->getError());
      }
 
@@ -840,9 +845,9 @@ void BatteryLowAlarm (int device)
      Gsender *gsender = Gsender::Instance();    // Getting pointer to class instance
      String subject = "RSF Low Battery Alarm!";
      if(gsender->Subject(subject)->Send(MySendToAddress, msg)) {
-         Serial.println("E-Mail Message send.");
+         Serial.println("E-Mail Message sent.");
      } else {
-         Serial.print("Error sending E-Mail message: ");
+         Serial.print("Error sending message: ");
          Serial.println(gsender->getError());
      }
 #endif
@@ -855,6 +860,7 @@ void BatteryLowAlarm (int device)
           { B_Flag = false; }                               // Yes, reset alarm flag
   }
 }
+
 
 /* ************************************************************* */
 void MQTT_Send (void)
@@ -872,6 +878,7 @@ void MQTT_Send (void)
               client.publish (FTEMP_TOPIC, msg);                          // send temperature
 
               u8x8.setCursor(0,3);
+              u8x8.clearLine(3)
               u8x8.printf("Frz Temp: %dF",temp );
 
               if (temp > FMaxTemp) {FMaxTemp = temp;}
@@ -897,6 +904,7 @@ void MQTT_Send (void)
               client.publish (RTEMP_TOPIC, msg);
 
               u8x8.setCursor(0,5);
+              u8x8.clearLine(5)
               u8x8.printf("Ref Temp: %dF",temp );
               
               if (temp > RMaxTemp) {RMaxTemp = temp;}
