@@ -1,5 +1,5 @@
-# Acurite 0986 decoder for: ESP32 ESP8266 Moteino-Mega
-A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT
+# Acurite 0986 decoder for: ESP32 ESP8266
+A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT, Email
 
 ~~~
 /**********************************************************************
