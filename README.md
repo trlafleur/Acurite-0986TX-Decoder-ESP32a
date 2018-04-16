@@ -1,17 +1,17 @@
-# Acurite 0986 decoder for: ESP32 ESP8266
-A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT, Email
+# Acurite 00986 decoder for: ESP32 ESP8266
+A decoder for an Acurite 00968 refrigerator freezer sensor, ESP32, MQTT, Email
 
 Work on this was stoped in favor of: Acurite-00592TX-Decoder-ESP32a
 
 TX-RX range of this devices was poor once install in a refrigerator or freezer
 
-Code works, but could use some of the improvements made in 00592 decoder.
+Code works, but could use some of the improvements made in 00592TX decoder.
 
 ~~~
 /**********************************************************************
- * Arduino code to decode the Acurite 0986TX wireless temperature sensor
+ * Arduino code to decode the Acurite 00986TX wireless temperature sensor
  *
- * The 0986TX wireless temperature probe contains a 433.92 MHz
+ * The 00986TX wireless temperature probe contains a 433.92 MHz
  *  wireless transmitter. The temperature from the sensor is
  *  sent approximately every 120 seconds. Their are two sensor
  *  1R is for refrigerator, 2F is for freezer
