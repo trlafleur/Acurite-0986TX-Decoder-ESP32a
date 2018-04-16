@@ -2,6 +2,7 @@
 A decoder for an Acurite 0968 refrigerator freezer sensor, ESP32, MQTT, Email
 
 Work on this was stoped in favor of: Acurite-00592TX-Decoder-ESP32a
+
 TX-RX range of this devices was poor once install in a refrigerator or freezer
 
 Code works, but could use some of the improvements made in 00592 decoder.
